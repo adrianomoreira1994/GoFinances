@@ -56,19 +56,6 @@ transactionsRouter.post(
       filenameCsv: request.file.filename,
     });
 
-    importedTransactions.forEach(async transaction => {
-      const { title, value, type, category_id: category } = transaction;
-
-      const transactionService = new CreateTransactionService();
-
-      await transactionService.execute({
-        title,
-        value,
-        type,
-        category,
-      });
-    });
-
     return response.json(importedTransactions);
   },
 );

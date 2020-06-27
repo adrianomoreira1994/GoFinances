@@ -1,52 +1,79 @@
 import csvParse from 'csv-parse';
 import fs from 'fs';
 import path from 'path';
-
-import { getRepository } from 'typeorm';
 import Transaction from '../models/Transaction';
 
 import uploadConfig from '../config/upload';
+import CreateTransactionService from './CreateTransactionService';
+import AppError from '../errors/AppError';
 
 interface Request {
   filenameCsv: string;
 }
 
+interface TransactionDTO {
+  title: string;
+  type: 'income' | 'outcome';
+  value: number;
+  category: string;
+}
+
 class ImportTransactionsService {
+  private getTransactionsFromCSV(csvFile: string): Promise<TransactionDTO[]> {
+    const filePath = path.resolve(uploadConfig.directory, csvFile);
+    const csvReadStream = fs.createReadStream(filePath);
+    const parsers = csvParse({ delimiter: ', ', from_line: 2 });
+    const parsed = csvReadStream.pipe(parsers);
+
+    fs.unlink(filePath, error => {
+      if (error) throw error;
+    });
+
+    return new Promise((resolve, reject) => {
+      const transactions: Array<TransactionDTO> = [];
+      parsed
+        .on('data', line => {
+          const [title, type, value, category] = line;
+
+          transactions.push({
+            title,
+            type,
+            value,
+            category,
+          });
+        })
+        .on('error', () => {
+          reject(new AppError('Error to read from csv file', 500));
+        })
+        .on('end', () => {
+          resolve(transactions);
+        });
+    });
+  }
+
   async execute({ filenameCsv }: Request): Promise<Transaction[]> {
-    const folderFileCsv = path.join(uploadConfig.directory, filenameCsv);
+    try {
+      const createTransaction = new CreateTransactionService();
 
-    const readCSVStream = fs.createReadStream(folderFileCsv);
+      let transactionsParsed: TransactionDTO[] = [];
 
-    const parseStream = csvParse({
-      from_line: 2,
-      ltrim: true,
-      rtrim: true,
-    });
+      transactionsParsed = await this.getTransactionsFromCSV(filenameCsv);
 
-    const parseCSV = readCSVStream.pipe(parseStream);
+      const transactionsPersisted: Transaction[] = [];
 
-    const lines: any[] = [];
-    const transactions: Transaction[] = [];
+      // eslint-disable-next-line no-restricted-syntax
+      for (const transaction of transactionsParsed) {
+        // eslint-disable-next-line no-await-in-loop
+        const transactionSaved = await createTransaction.execute(transaction);
+        transactionsPersisted.push(transactionSaved);
+      }
 
-    parseCSV.on('data', line => {
-      lines.push(line);
-    });
-
-    await new Promise(resolve => {
-      parseCSV.on('end', resolve);
-    });
-
-    lines.forEach(item => {
-      const transaction = new Transaction();
-      transaction.title = String(item[0]);
-      transaction.type = item[1] === 'income' ? 'income' : 'outcome';
-      transaction.value = Number(item[2]);
-      transaction.category_id = String(item[3]);
-
-      transactions.push(transaction);
-    });
-
-    return transactions;
+      return transactionsPersisted;
+    } catch (error) {
+      // eslint-disable-next-line no-console
+      console.log(error);
+      throw new AppError('Error to read and save transactions', 500);
+    }
   }
 }
 
